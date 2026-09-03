@@ -462,7 +462,7 @@ pixi run stop
 
 修改代码或配置后，依次执行 `pixi run stop`、`pixi run start` 和 `pixi run status`。
 
-Bridge 使用 `nohup + setsid` 后台运行，关闭终端不会停止。Workspace、容器或服务器重启后需要手动启动。进程存在不代表飞书长连接一定健康，还应检查飞书上线通知和错误日志。
+Bridge 使用 `nohup` 后台运行，并始终脱离启动它的终端会话：有 `setsid` 时用 `setsid`，没有时（例如 macOS）由 Python 自己调用 `os.setsid`。关闭终端不会停止。Workspace、容器或服务器重启后需要手动启动。进程存在不代表飞书长连接一定健康，还应检查飞书上线通知和错误日志。
 
 ### 5.2 配置和运行文件
 
