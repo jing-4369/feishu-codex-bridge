@@ -98,6 +98,30 @@ class FakeTurn:
         self.interrupt_calls += 1
 
 
+class SteerableTurn(FakeTurn):
+    def __init__(self):
+        super().__init__()
+        self.steer_calls = 0
+
+
+class RacingSteerTurn(SteerableTurn):
+    def __init__(self):
+        super().__init__()
+        self.steer_started = asyncio.Event()
+        self.release_steer = asyncio.Event()
+
+    async def steer(self, _text):
+        self.steer_calls += 1
+        self.steer_started.set()
+        await self.release_steer.wait()
+
+
+class HangingSteerTurn(SteerableTurn):
+    async def steer(self, _text):
+        self.steer_calls += 1
+        await asyncio.Event().wait()
+
+
 class HangingTurn:
     id = "turn-hanging"
 
@@ -343,6 +367,58 @@ class BridgeReconnectTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("现补发结果", self.channel.sent[-1][1])
         self.assertIn("finished while offline", self.channel.sent[-1][1])
 
+
+    async def test_reconnect_during_steer_does_not_confirm_delivery(self):
+        client = FakeClient()
+        turn = RacingSteerTurn()
+        owner = asyncio.create_task(client.closed.wait())
+        state = ActiveTurn(task=owner, chat_id="chat-1", client=client, turn=turn)
+        self.bridge.active_turns["chat-1"] = state
+        self.bridge.last_tasks["chat-1"] = {
+            "status": "running",
+            "prompt": "old work",
+        }
+        message = SimpleNamespace(chat_id="chat-1", message_id="message-2")
+
+        steer_task = asyncio.create_task(
+            self.bridge.steer_active_turn(message, "new input", "new input")
+        )
+        await turn.steer_started.wait()
+        self.bridge.on_reconnecting()
+        await asyncio.wrap_future(self.bridge.reconnect_cleanup_future)
+        turn.release_steer.set()
+        handled = await steer_task
+
+        self.assertTrue(handled)
+        self.assertEqual(self.bridge.last_tasks["chat-1"]["prompt"], "old work")
+        self.assertIn("无法确认消息是否送达", self.channel.sent[-1][1])
+
+    async def test_hanging_steer_is_not_retried_automatically(self):
+        self.bridge.codex_request_timeout = 0.02
+        self.bridge.reconnect_cleanup_timeout = 0.02
+        client = FakeClient()
+        turn = HangingSteerTurn()
+        owner = asyncio.create_task(client.closed.wait())
+        state = ActiveTurn(task=owner, chat_id="chat-1", client=client, turn=turn)
+        self.bridge.active_turns["chat-1"] = state
+        self.bridge.last_tasks["chat-1"] = {
+            "status": "running",
+            "prompt": "old work",
+        }
+        message = SimpleNamespace(chat_id="chat-1", message_id="message-2")
+
+        handled = await self.bridge.steer_active_turn(
+            message, "possibly delivered", "possibly delivered"
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(turn.steer_calls, 1)
+        self.assertEqual(client.close_calls, 1)
+        self.assertEqual(
+            self.bridge.last_tasks["chat-1"]["interrupted_reason"],
+            "steer_timeout",
+        )
+        self.assertIn("没有自动重试", self.channel.sent[-1][1])
 
 if __name__ == "__main__":
     unittest.main()
